@@ -1,0 +1,15 @@
+streamlit
+pandas
+numpy
+Pillow
+opencv-python
+paddleocr
+paddlepaddle
+transformers
+datasets
+seqeval
+scikit-learn
+torch
+torchvision
+pdf2image
+python-multipart
