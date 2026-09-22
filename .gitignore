@@ -13,3 +13,4 @@ models/checkpoints/
 *.bin
 data/funsd/
 models/layoutlmv3-funsd/checkpoint-*/
+models/layoutlmv3-funsd/model.safetensors

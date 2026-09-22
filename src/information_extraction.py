@@ -1,9 +1,8 @@
 import re
-from collections import OrderedDict
 
 
 # ============================================================
-# TEXT CLEANING
+# BASIC TEXT CLEANING
 # ============================================================
 
 def clean_text(text):
@@ -12,25 +11,29 @@ def clean_text(text):
 
     text = str(text)
 
-    text = text.replace("\n", " ")
-    text = text.replace("\r", " ")
-    text = text.replace("\t", " ")
-
-    text = re.sub(r"\s+", " ", text)
+    text = text.replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n+", "\n", text)
 
     return text.strip()
 
 
+def clean_value(value):
+    if value is None:
+        return ""
+
+    value = str(value)
+    value = re.sub(r"\s+", " ", value)
+    value = value.strip(" :|-")
+
+    return value.strip()
+
+
 def build_combined_text(words):
-    cleaned_words = []
+    if not words:
+        return ""
 
-    for word in words or []:
-        value = clean_text(word)
-
-        if value:
-            cleaned_words.append(value)
-
-    return " ".join(cleaned_words)
+    return clean_text(" ".join(str(word) for word in words if word))
 
 
 # ============================================================
@@ -39,6 +42,10 @@ def build_combined_text(words):
 
 def detect_document_type(text):
     text_lower = text.lower()
+
+    # --------------------------------------------------------
+    # Academic documents
+    # --------------------------------------------------------
 
     academic_patterns = [
         "grade card",
@@ -67,6 +74,10 @@ def detect_document_type(text):
     if academic_score >= 2:
         return "Academic Document"
 
+    # --------------------------------------------------------
+    # Receipts / invoices
+    # --------------------------------------------------------
+
     receipt_patterns = [
         "receipt",
         "fee receipt",
@@ -78,6 +89,12 @@ def detect_document_type(text):
         "total amount",
         "invoice",
         "invoice no",
+        "table no",
+        "table no.",
+        "cashier",
+        "subtotal",
+        "total",
+        "clerk",
     ]
 
     receipt_score = sum(
@@ -86,8 +103,40 @@ def detect_document_type(text):
         if pattern in text_lower
     )
 
-    if receipt_score >= 2:
+    currency_receipt = bool(
+        re.search(
+            r"(?:£|€|\$|₹|rs\.?|inr)\s*\d",
+            text,
+            re.IGNORECASE
+        )
+    )
+
+    food_receipt_terms = [
+        "soft drink",
+        "cod & chips",
+        "cod&chips",
+        "cod and chips",
+        "bread & butter",
+        "bread&butter",
+        "bread and butter",
+    ]
+
+    food_score = sum(
+        1
+        for pattern in food_receipt_terms
+        if pattern in text_lower
+    )
+
+    if (
+        receipt_score >= 2
+        or currency_receipt
+        or food_score >= 2
+    ):
         return "Receipt / Invoice"
+
+    # --------------------------------------------------------
+    # Identity documents
+    # --------------------------------------------------------
 
     identity_patterns = [
         "aadhaar",
@@ -99,8 +148,15 @@ def detect_document_type(text):
         "unique disability id",
     ]
 
-    if any(pattern in text_lower for pattern in identity_patterns):
+    if any(
+        pattern in text_lower
+        for pattern in identity_patterns
+    ):
         return "Identity Document"
+
+    # --------------------------------------------------------
+    # Certificates
+    # --------------------------------------------------------
 
     certificate_patterns = [
         "certificate",
@@ -112,8 +168,15 @@ def detect_document_type(text):
         "bonafide certificate",
     ]
 
-    if any(pattern in text_lower for pattern in certificate_patterns):
+    if any(
+        pattern in text_lower
+        for pattern in certificate_patterns
+    ):
         return "Certificate"
+
+    # --------------------------------------------------------
+    # Forms / applications
+    # --------------------------------------------------------
 
     form_patterns = [
         "application form",
@@ -138,529 +201,428 @@ def detect_document_type(text):
 
 
 # ============================================================
-# BASIC ENTITY EXTRACTION
+# REGULAR EXPRESSION HELPERS
+# ============================================================
+
+def extract_first(patterns, text, flags=re.IGNORECASE):
+    for pattern in patterns:
+        match = re.search(pattern, text, flags)
+        if match:
+            value = match.group(1)
+            value = clean_value(value)
+
+            if value:
+                return value
+
+    return ""
+
+
+# ============================================================
+# DATES
 # ============================================================
 
 def extract_dates(text):
     patterns = [
-        r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b",
-        r"\b\d{1,2}[-/][A-Za-z]{3,9}[-/]\d{2,4}\b",
-        r"\b\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4}\b",
-        r"\b[A-Za-z]{3,9}\s+\d{4}\b",
+        r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",
+        r"\b\d{1,2}[/-][A-Za-z]{3,9}[/-]\d{2,4}\b",
+        r"\b\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}\b",
+        r"\b[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}\b",
+        r"\b\d{1,2}\s+[A-Za-z]{3,9},\s+\d{4}\b",
     ]
 
-    results = []
+    dates = []
 
     for pattern in patterns:
-        for match in re.findall(
+        matches = re.findall(
             pattern,
             text,
             flags=re.IGNORECASE
-        ):
-            if match not in results:
-                results.append(match)
+        )
 
-    return results
+        for match in matches:
+            value = clean_value(match)
 
+            if value and value not in dates:
+                dates.append(value)
+
+    return dates
+
+
+# ============================================================
+# EMAILS
+# ============================================================
 
 def extract_emails(text):
+    pattern = r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
+
     return list(
-        OrderedDict.fromkeys(
-            re.findall(
-                r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
-                text
-            )
+        dict.fromkeys(
+            re.findall(pattern, text)
         )
     )
 
 
-def extract_phone_numbers(text):
-    numbers = re.findall(
-        r"(?<!\d)(?:\+91[\s-]?)?[6-9]\d{9}(?!\d)",
-        text
-    )
+# ============================================================
+# PHONE NUMBERS
+# ============================================================
 
-    return list(
-        OrderedDict.fromkeys(numbers)
-    )
+def extract_phones(text):
+    patterns = [
+        r"\+?\d[\d\s().-]{7,}\d",
+    ]
 
+    phones = []
+
+    for pattern in patterns:
+        matches = re.findall(
+            pattern,
+            text
+        )
+
+        for match in matches:
+            value = clean_value(match)
+
+            if len(re.sub(r"\D", "", value)) >= 8:
+                if value not in phones:
+                    phones.append(value)
+
+    return phones
+
+
+# ============================================================
+# URLS
+# ============================================================
 
 def extract_urls(text):
-    urls = re.findall(
-        r"\bhttps?://[^\s]+",
-        text,
-        flags=re.IGNORECASE
+    pattern = (
+        r"\b(?:https?://|www\.)"
+        r"[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+        r"(?:/[^\s]*)?"
     )
 
     return list(
-        OrderedDict.fromkeys(urls)
-    )
-
-
-# ============================================================
-# REFERENCE NUMBER EXTRACTION
-# ============================================================
-
-def extract_reference_numbers(text):
-    results = []
-
-    patterns = [
-        r"\b(?:Regd\.?\s*No\.?|Registration\s*No\.?|Register\s*No\.?)\s*[:\-]?\s*([A-Za-z0-9/-]+)",
-        r"\b(?:Application\s*No\.?|Application\s*Number)\s*[:\-]?\s*([A-Za-z0-9/-]+)",
-        r"\b(?:Reference\s*No\.?|Reference\s*Number)\s*[:\-]?\s*([A-Za-z0-9/-]+)",
-        r"\b(?:Receipt\s*No\.?|Receipt\s*Number)\s*[:\-]?\s*([A-Za-z0-9/-]+)",
-        r"\b(?:Transaction\s*ID|Txn\s*ID)\s*[:\-]?\s*([A-Za-z0-9/-]+)",
-    ]
-
-    for pattern in patterns:
-        matches = re.findall(
-            pattern,
-            text,
-            flags=re.IGNORECASE
-        )
-
-        for value in matches:
-            value = value.strip()
-
-            if value and value not in results:
-                results.append(value)
-
-    return results
-
-
-# ============================================================
-# MONETARY AMOUNTS
-# ============================================================
-
-def extract_amounts(text):
-    results = []
-
-    patterns = [
-        r"(?:₹|Rs\.?|INR)\s*[\d,]+(?:\.\d{1,2})?",
-        r"(?:amount|total|fee|fees|paid|payment)\s*(?:is|:|-)?\s*(?:₹|Rs\.?|INR)?\s*[\d,]+(?:\.\d{1,2})?",
-    ]
-
-    for pattern in patterns:
-        matches = re.findall(
-            pattern,
-            text,
-            flags=re.IGNORECASE
-        )
-
-        for value in matches:
-            value = clean_text(value)
-
-            if value and value not in results:
-                results.append(value)
-
-    return results
-
-
-# ============================================================
-# GENERIC KEY-VALUE EXTRACTION
-# ============================================================
-
-FIELD_ALIASES = OrderedDict(
-    [
-        (
-            "name",
-            [
-                "name",
-                "student name",
-                "candidate name",
-                "applicant name",
-                "holder name",
-            ],
-        ),
-        (
-            "registration_number",
-            [
-                "regd.no",
-                "regd no",
-                "registration no",
-                "registration number",
-                "register no",
-            ],
-        ),
-        (
-            "application_number",
-            [
-                "application no",
-                "application number",
-                "app no",
-            ],
-        ),
-        (
-            "reference_number",
-            [
-                "reference no",
-                "reference number",
-                "ref no",
-            ],
-        ),
-        (
-            "transaction_id",
-            [
-                "transaction id",
-                "txn id",
-                "transaction number",
-            ],
-        ),
-        (
-            "receipt_number",
-            [
-                "receipt no",
-                "receipt number",
-            ],
-        ),
-        (
-            "date_of_birth",
-            [
-                "date of birth",
-                "dob",
-                "birth date",
-            ],
-        ),
-        (
-            "date",
-            [
-                "date",
-            ],
-        ),
-        (
-            "campus",
-            [
-                "campus",
-            ],
-        ),
-        (
-            "institute",
-            [
-                "institute",
-                "institution",
-            ],
-        ),
-        (
-            "academic_year",
-            [
-                "academic year",
-            ],
-        ),
-        (
-            "percentage",
-            [
-                "percentage",
-                "percent",
-            ],
-        ),
-        (
-            "disability_type",
-            [
-                "disability type",
-                "type of disability",
-            ],
-        ),
-        (
-            "issuing_authority",
-            [
-                "issuing authority",
-                "issued by",
-            ],
-        ),
-        (
-            "fee_description",
-            [
-                "fee description",
-                "description",
-            ],
-        ),
-        (
-            "payment_mode",
-            [
-                "payment mode",
-                "mode of payment",
-            ],
-        ),
-        (
-            "amount",
-            [
-                "amount",
-                "total amount",
-                "amount paid",
-            ],
-        ),
-    ]
-)
-
-
-def extract_label_values(text):
-    values = OrderedDict()
-
-    for field, aliases in FIELD_ALIASES.items():
-
-        for alias in aliases:
-
-            pattern = (
-                r"\b"
-                + re.escape(alias)
-                + r"\s*[:\-]\s*"
-                r"(.+?)(?=\s+\b(?:"
-                + "|".join(
-                    re.escape(a)
-                    for other_field, alias_list in FIELD_ALIASES.items()
-                    if other_field != field
-                    for a in alias_list
-                )
-                + r")\b\s*[:\-]|$)"
-            )
-
-            match = re.search(
+        dict.fromkeys(
+            re.findall(
                 pattern,
                 text,
                 flags=re.IGNORECASE
             )
+        )
+    )
 
-            if match:
 
-                value = clean_text(
-                    match.group(1)
-                )
+# ============================================================
+# REFERENCE NUMBERS
+# ============================================================
 
-                if value:
-                    values[field] = value
-                    break
+def extract_reference_numbers(text):
+    patterns = [
+        r"\b(?:ref(?:erence)?\.?\s*(?:no|number)?|"
+        r"application\s*(?:no|number)|"
+        r"certificate\s*(?:no|number)|"
+        r"invoice\s*(?:no|number)|"
+        r"transaction\s*(?:id|no|number)|"
+        r"txn\s*(?:id|no|number))"
+        r"\s*[:#-]?\s*([A-Z0-9/-]{4,})\b",
+    ]
+
+    values = []
+
+    for pattern in patterns:
+        matches = re.findall(
+            pattern,
+            text,
+            flags=re.IGNORECASE
+        )
+
+        for match in matches:
+            value = clean_value(match)
+
+            if value and value not in values:
+                values.append(value)
 
     return values
 
 
 # ============================================================
-# GITAM GRADE CARD DETECTION
+# AMOUNTS
 # ============================================================
 
-def is_grade_card(text):
-    text_lower = text.lower()
+def extract_amounts(text):
+    pattern = (
+        r"(?:₹|Rs\.?|INR|\$|€|£)"
+        r"\s*"
+        r"\d+(?:,\d{3})*(?:\.\d{1,2})?"
+        r"|"
+        r"\b\d+(?:,\d{3})*(?:\.\d{1,2})?"
+        r"\s*(?:₹|Rs\.?|INR|\$|€|£)"
+    )
 
-    return (
-        "grade card" in text_lower
-        and (
-            "sgpa" in text_lower
-            or "cgpa" in text_lower
-            or "course code" in text_lower
+    return list(
+        dict.fromkeys(
+            clean_value(match)
+            for match in re.findall(
+                pattern,
+                text,
+                flags=re.IGNORECASE
+            )
         )
     )
 
 
 # ============================================================
-# GITAM GRADE CARD FIELDS
+# FIELD ALIASES
 # ============================================================
 
-def extract_grade_card_fields(text):
-    fields = OrderedDict()
+FIELD_ALIASES = {
+    "name": [
+        "name",
+        "student name",
+        "candidate name",
+        "applicant name",
+        "full name",
+        "student",
+    ],
+    "registration_number": [
+        "registration number",
+        "registration no",
+        "registration id",
+        "reg no",
+        "reg number",
+        "roll number",
+        "roll no",
+        "student id",
+    ],
+    "course": [
+        "course",
+        "degree",
+        "program",
+        "programme",
+    ],
+    "branch": [
+        "branch",
+        "specialization",
+        "specialisation",
+        "department",
+    ],
+    "semester": [
+        "semester",
+        "sem",
+    ],
+    "sgpa": [
+        "sgpa",
+    ],
+    "cgpa": [
+        "cgpa",
+    ],
+    "date": [
+        "date",
+        "date of birth",
+        "issue date",
+        "printed on",
+        "issued on",
+    ],
+    "institution": [
+        "institution",
+        "college",
+        "university",
+        "school",
+    ],
+    "certificate_number": [
+        "certificate number",
+        "certificate no",
+        "certificate id",
+    ],
+}
 
-    # --------------------------------------------------------
-    # Degree
-    # --------------------------------------------------------
 
-    degree_match = re.search(
-        r"\b(B\.?\s*Tech(?:\s+Degree)?|M\.?\s*Tech(?:\s+Degree)?|B\.?\s*Sc|M\.?\s*Sc|BCA|MCA)"
-        r"(?:\s+Degree)?",
-        text,
-        flags=re.IGNORECASE
-    )
+# ============================================================
+# LABEL-VALUE EXTRACTION
+# ============================================================
 
-    if degree_match:
-        degree = clean_text(
-            degree_match.group(0)
-        )
+def extract_label_values(text):
+    fields = {}
 
-        if "degree" not in degree.lower():
-            degree = degree + " Degree"
+    lines = [
+        clean_value(line)
+        for line in text.splitlines()
+        if clean_value(line)
+    ]
 
-        fields["course_degree"] = degree
+    for canonical_name, aliases in FIELD_ALIASES.items():
 
-    # --------------------------------------------------------
-    # Registration Number
-    # --------------------------------------------------------
+        for line in lines:
 
-    registration_match = re.search(
-        r"\bRegd\.?\s*No\.?\s*[:\-]?\s*([A-Za-z0-9/-]+)",
-        text,
-        flags=re.IGNORECASE
-    )
+            for alias in aliases:
 
-    if registration_match:
-        fields["registration_number"] = (
-            registration_match.group(1).strip()
-        )
+                pattern = (
+                    r"^"
+                    + re.escape(alias)
+                    + r"\s*[:#-]?\s*(.+)$"
+                )
 
-    # --------------------------------------------------------
-    # Name
-    # --------------------------------------------------------
+                match = re.match(
+                    pattern,
+                    line,
+                    flags=re.IGNORECASE
+                )
 
-    name_match = re.search(
-        r"\bName\s*[:\-]\s*(.+?)(?=\s+Branch\s*[:\-])",
-        text,
-        flags=re.IGNORECASE
-    )
+                if match:
+                    value = clean_value(match.group(1))
 
-    if name_match:
-        fields["name"] = clean_text(
-            name_match.group(1)
-        )
+                    if value:
+                        fields[canonical_name] = value
+                        break
 
-    # --------------------------------------------------------
-    # Branch
-    # --------------------------------------------------------
-
-    branch_match = re.search(
-        r"\bBranch\s*[:\-]\s*(.+?)(?=\s+Course\s+Code\b)",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    if branch_match:
-        fields["branch"] = clean_text(
-            branch_match.group(1)
-        )
-
-    # --------------------------------------------------------
-    # Semester / Examination Period
-    # --------------------------------------------------------
-
-    semester_match = re.search(
-        r"\b("
-        r"(?:I|II|III|IV|V|VI|VII|VIII|1st|2nd|3rd|4th|5th|6th|7th|8th)"
-        r"\s+Semester"
-        r"(?:\s*,?\s*[A-Za-z]+\s+\d{4})?"
-        r")",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    if semester_match:
-        semester_value = clean_text(
-            semester_match.group(1)
-        )
-
-        fields["semester"] = semester_value
-        fields["exam_period"] = semester_value
-
-    # --------------------------------------------------------
-    # Academic Year
-    # --------------------------------------------------------
-
-    academic_year_match = re.search(
-        r"\b(20\d{2}\s*[-/]\s*20\d{2})\b",
-        text
-    )
-
-    if academic_year_match:
-        fields["academic_year"] = (
-            academic_year_match.group(1)
-        )
-
-    # --------------------------------------------------------
-    # SGPA
-    # --------------------------------------------------------
-
-    sgpa_match = re.search(
-        r"\bSGPA\s*[:=]?\s*(\d+(?:\.\d+)?)",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    if sgpa_match:
-        fields["sgpa"] = sgpa_match.group(1)
-
-    # --------------------------------------------------------
-    # CGPA
-    # --------------------------------------------------------
-
-    cgpa_match = re.search(
-        r"\bCGPA\s*[:=]?\s*(\d+(?:\.\d+)?)",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    if cgpa_match:
-        fields["cgpa"] = cgpa_match.group(1)
-
-    # --------------------------------------------------------
-    # Printed Date
-    # --------------------------------------------------------
-
-    printed_match = re.search(
-        r"\bPrinted\s+On\s*[:\-]?\s*"
-        r"(\d{1,2}[-/][A-Za-z]{3,9}[-/]\d{2,4})",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    if printed_match:
-        fields["printed_date"] = (
-            printed_match.group(1)
-        )
-
-    # --------------------------------------------------------
-    # Institution
-    # --------------------------------------------------------
-
-    if "GITAM" in text.upper():
-
-        fields["institution"] = (
-            "GITAM (Gandhi Institute of Technology and Management)"
-        )
+            if canonical_name in fields:
+                break
 
     return fields
 
 
 # ============================================================
-# GRADE CARD SUBJECT TABLE
+# GRADE CARD DETECTION
+# ============================================================
+
+def is_grade_card(text):
+    text_lower = text.lower()
+
+    indicators = [
+        "grade card",
+        "course code",
+        "sgpa",
+        "cgpa",
+        "credits",
+        "name of the course",
+    ]
+
+    score = sum(
+        1
+        for indicator in indicators
+        if indicator in text_lower
+    )
+
+    return score >= 3
+
+
+# ============================================================
+# GRADE CARD FIELDS
+# ============================================================
+
+def extract_grade_card_fields(text):
+    fields = {}
+
+    name = extract_first(
+        [
+            r"(?:student\s+name|name)\s*[:\-]\s*(.+)",
+        ],
+        text
+    )
+
+    if name:
+        fields["Name"] = name
+
+    registration_number = extract_first(
+        [
+            r"(?:registration\s*(?:number|no|id)|"
+            r"reg\s*(?:no|number))\s*[:\-]?\s*([A-Z0-9/-]+)"
+        ],
+        text
+    )
+
+    if registration_number:
+        fields["Registration Number"] = registration_number
+
+    course = extract_first(
+        [
+            r"(?:course|degree|program|programme)\s*[:\-]\s*(.+)"
+        ],
+        text
+    )
+
+    if course:
+        fields["Course Degree"] = course
+
+    branch = extract_first(
+        [
+            r"(?:branch|specialization|specialisation|department)"
+            r"\s*[:\-]\s*(.+)"
+        ],
+        text
+    )
+
+    if branch:
+        fields["Branch"] = branch
+
+    semester = extract_first(
+        [
+            r"(?:semester|sem)\s*[:\-]?\s*(.+)"
+        ],
+        text
+    )
+
+    if semester:
+        fields["Semester"] = semester
+
+    sgpa = extract_first(
+        [
+            r"\bsgpa\s*[:\-]?\s*(\d+(?:\.\d+)?)"
+        ],
+        text
+    )
+
+    if sgpa:
+        fields["Sgpa"] = sgpa
+
+    cgpa = extract_first(
+        [
+            r"\bcgpa\s*[:\-]?\s*(\d+(?:\.\d+)?)"
+        ],
+        text
+    )
+
+    if cgpa:
+        fields["Cgpa"] = cgpa
+
+    printed_date = extract_first(
+        [
+            r"printed\s*(?:on)?\s*[:\-]?\s*"
+            r"(\d{1,2}[-/][A-Za-z]{3,9}[-/]\d{2,4})",
+            r"printed\s*(?:on)?\s*[:\-]?\s*"
+            r"(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})",
+        ],
+        text
+    )
+
+    if printed_date:
+        fields["Printed Date"] = printed_date
+
+    institution = extract_first(
+        [
+            r"(?:institution|university|college)\s*[:\-]\s*(.+)"
+        ],
+        text
+    )
+
+    if institution:
+        fields["Institution"] = institution
+
+    return fields
+
+
+# ============================================================
+# GRADE CARD TABLE
 # ============================================================
 
 def extract_grade_card_table(text):
-    """
-    Extract Grade Card rows using the known structure:
-
-        Course Code
-        Course Name
-        Credits
-        Grade
-
-    Example:
-
-        24CSEN1001 Digital Logic Circuits 2 B+
-    """
-
     rows = []
-
-    # --------------------------------------------------------
-    # Normalize OCR text
-    # --------------------------------------------------------
 
     text = clean_text(text)
 
-    # --------------------------------------------------------
-    # Grade pattern
-    # --------------------------------------------------------
-
     grade_pattern = (
-        r"(?:O|A\+|A-|A|B\+|B-|B|C\+|C-|C|D\+|D-|D|E|F|P|S)"
+        r"(?:O|A\+|A-|A|B\+|B-|B|C\+|C-|C|"
+        r"D\+|D-|D|E|F|P|S)"
     )
-
-    # --------------------------------------------------------
-    # Course-code pattern
-    #
-    # GITAM course codes commonly look like:
-    # 24CSEN1001
-    # 24CSEN1041
-    # 24EECE2231
-    # ENVS1003
-    # IENT1051
-    # LANG1251
-    # MATH1272
-    # PHYS1291
-    # --------------------------------------------------------
 
     course_code_pattern = (
         r"\b(?:"
@@ -669,10 +631,6 @@ def extract_grade_card_table(text):
         r"[A-Z]{3,6}\d{3,5}"
         r")\b"
     )
-
-    # --------------------------------------------------------
-    # Find course-code positions
-    # --------------------------------------------------------
 
     matches = list(
         re.finditer(
@@ -684,10 +642,6 @@ def extract_grade_card_table(text):
 
     if not matches:
         return rows
-
-    # --------------------------------------------------------
-    # Process each course row
-    # --------------------------------------------------------
 
     for index, match in enumerate(matches):
 
@@ -706,10 +660,6 @@ def extract_grade_card_table(text):
             text[start:end]
         )
 
-        # ----------------------------------------------------
-        # Stop before SGPA / CGPA / Printed On / Note
-        # ----------------------------------------------------
-
         segment = re.split(
             r"\b(?:SGPA|CGPA|Printed\s+On|Note)\b",
             segment,
@@ -722,22 +672,11 @@ def extract_grade_card_table(text):
         if not segment:
             continue
 
-        # ----------------------------------------------------
-        # Extract credits + grade from the END of the segment
-        #
-        # Examples:
-        #
-        # Digital Logic Circuits 2 B+
-        # Environmental Studies 3 A
-        # Fundamentals of Entrepreneurship 2 A+
-        # ----------------------------------------------------
-
         tail_pattern = (
             r"^(.*?)"
             r"\s+"
             r"(\d+(?:\.\d+)?)"
-            r"\s+"
-            r"("
+            r"\s+("
             + grade_pattern
             + r")"
             r"\s*$"
@@ -764,20 +703,13 @@ def extract_grade_card_table(text):
             tail_match.group(3)
         ).upper()
 
-        # ----------------------------------------------------
-        # Validation
-        # ----------------------------------------------------
-
-        if not course_name:
+        if (
+            not course_name
+            or len(course_name) < 2
+            or len(course_name) > 150
+        ):
             continue
 
-        if len(course_name) < 2:
-            continue
-
-        if len(course_name) > 150:
-            continue
-
-        # Avoid header/metadata false positives.
         invalid_names = {
             "name of the course",
             "course code",
@@ -799,11 +731,8 @@ def extract_grade_card_table(text):
             ]
         )
 
-    # --------------------------------------------------------
-    # Remove duplicates
-    # --------------------------------------------------------
-
     unique_rows = []
+
     seen = set()
 
     for row in rows:
@@ -818,64 +747,109 @@ def extract_grade_card_table(text):
 
 
 # ============================================================
-# RECEIPT EXTRACTION
+# RECEIPT / INVOICE EXTRACTION
 # ============================================================
 
 def extract_receipt_fields(text):
-    fields = OrderedDict()
+    fields = {}
 
-    patterns = OrderedDict(
+    text_clean = clean_text(text)
+
+    # Total amount
+    total_patterns = [
+        r"(?:grand\s+total|total\s+amount|amount\s+paid|"
+        r"total)\s*[:\-]?\s*"
+        r"(?:£|€|\$|₹|rs\.?|inr)?\s*"
+        r"(\d+(?:\.\d{1,2})?)",
+
+        r"(?:£|€|\$|₹|rs\.?|inr)\s*"
+        r"(\d+(?:\.\d{1,2})?)\s*$",
+    ]
+
+    total = extract_first(
+        total_patterns,
+        text_clean
+    )
+
+    if total:
+        fields["Total Amount"] = total
+
+    # Transaction ID
+    transaction_id = extract_first(
         [
-            (
-                "transaction_id",
-                r"\b(?:Transaction\s*ID|Txn\s*ID)\s*[:\-]?\s*([A-Za-z0-9/-]+)"
-            ),
-            (
-                "receipt_number",
-                r"\b(?:Receipt\s*No\.?|Receipt\s*Number)\s*[:\-]?\s*([A-Za-z0-9/-]+)"
-            ),
-            (
-                "registration_number",
-                r"\b(?:Regd\.?\s*No\.?|Registration\s*No\.?)\s*[:\-]?\s*([A-Za-z0-9/-]+)"
-            ),
-            (
-                "payment_mode",
-                r"\b(?:Payment\s*Mode|Mode\s*of\s*Payment)\s*[:\-]?\s*(.+?)(?=\s+\b(?:Amount|Total|Date|Transaction|Txn)\b|$)"
-            ),
-            (
-                "fee_description",
-                r"\b(?:Fee\s*Description|Description)\s*[:\-]?\s*(.+?)(?=\s+\b(?:Amount|Total|Payment|Date)\b|$)"
-            ),
-        ]
+            r"(?:transaction\s*(?:id|no|number)|txn\s*(?:id|no|number))"
+            r"\s*[:#-]?\s*([A-Z0-9/-]+)"
+        ],
+        text_clean
     )
 
-    for field, pattern in patterns.items():
+    if transaction_id:
+        fields["Transaction ID"] = transaction_id
 
-        match = re.search(
-            pattern,
-            text,
-            flags=re.IGNORECASE
-        )
-
-        if match:
-
-            value = clean_text(
-                match.group(1)
-            )
-
-            if value:
-                fields[field] = value
-
-    amount_match = re.search(
-        r"\b(?:Total\s+Amount|Amount\s+Paid|Amount|Total)\s*"
-        r"[:\-]?\s*(?:₹|Rs\.?|INR)?\s*"
-        r"([\d,]+(?:\.\d{1,2})?)",
-        text,
-        flags=re.IGNORECASE
+    # Invoice number
+    invoice_number = extract_first(
+        [
+            r"(?:invoice\s*(?:no|number|id))"
+            r"\s*[:#-]?\s*([A-Z0-9/-]+)"
+        ],
+        text_clean
     )
 
-    if amount_match:
-        fields["amount"] = amount_match.group(1)
+    if invoice_number:
+        fields["Invoice Number"] = invoice_number
+
+    # Table number
+    table_number = extract_first(
+        [
+            r"(?:table\s*(?:no|number))"
+            r"\s*[:#-]?\s*([A-Z0-9/-]+)"
+        ],
+        text_clean
+    )
+
+    if table_number:
+        fields["Table Number"] = table_number
+
+    # Date
+    dates = extract_dates(text_clean)
+
+    if dates:
+        fields["Date"] = dates[0]
+
+    # Phone
+    phones = extract_phones(text_clean)
+
+    if phones:
+        fields["Phone"] = phones[0]
+
+    # Currency amounts
+    amounts = extract_amounts(text_clean)
+
+    if amounts:
+        fields["Amounts"] = ", ".join(amounts)
+
+    # Payment mode
+    payment_mode = extract_first(
+        [
+            r"(?:payment\s*mode|mode\s*of\s*payment)"
+            r"\s*[:\-]?\s*([A-Za-z ]+)"
+        ],
+        text_clean
+    )
+
+    if payment_mode:
+        fields["Payment Mode"] = payment_mode
+
+    # Cashier / clerk
+    cashier = extract_first(
+        [
+            r"(?:cashier|clerk)\s*[:#-]?\s*([A-Za-z0-9]+)"
+        ],
+        text_clean
+    )
+
+    if cashier:
+        fields["Cashier / Clerk"] = cashier
 
     return fields
 
@@ -885,61 +859,45 @@ def extract_receipt_fields(text):
 # ============================================================
 
 def extract_certificate_fields(text):
-    fields = OrderedDict()
+    fields = {}
 
-    patterns = [
-        (
-            "application_number",
-            r"\b(?:Application\s*No\.?|Application\s*Number)\s*[:\-]?\s*([A-Za-z0-9/-]+)"
-        ),
-        (
-            "reference_number",
-            r"\b(?:Reference\s*No\.?|Reference\s*Number)\s*[:\-]?\s*([A-Za-z0-9/-]+)"
-        ),
-        (
-            "name",
-            r"\bName\s*[:\-]\s*(.+?)(?=\s+\b(?:Date|DOB|Father|Mother|Address|Gender)\b|$)"
-        ),
-        (
-            "date_of_birth",
-            r"\b(?:Date\s+of\s+Birth|DOB)\s*[:\-]?\s*([A-Za-z0-9/-]+)"
-        ),
-        (
-            "disability_type",
-            r"\b(?:Disability\s*Type|Type\s+of\s+Disability)\s*[:\-]?\s*(.+?)(?=\s+\b(?:Percentage|Date|ID)\b|$)"
-        ),
-        (
-            "issuing_authority",
-            r"\b(?:Issuing\s+Authority|Issued\s+By)\s*[:\-]?\s*(.+?)(?=\s+\b(?:Date|ID|Application)\b|$)"
-        ),
-    ]
-
-    for field, pattern in patterns:
-
-        match = re.search(
-            pattern,
-            text,
-            flags=re.IGNORECASE
-        )
-
-        if match:
-
-            value = clean_text(
-                match.group(1)
-            )
-
-            if value:
-                fields[field] = value
-
-    percentage_match = re.search(
-        r"\b(\d{1,3}(?:\.\d+)?)\s*%",
+    name = extract_first(
+        [
+            r"(?:name|awarded\s+to|presented\s+to)"
+            r"\s*[:\-]?\s*([A-Za-z][A-Za-z .'-]{2,100})"
+        ],
         text
     )
 
-    if percentage_match:
-        fields["percentage"] = (
-            percentage_match.group(1) + "%"
-        )
+    if name:
+        fields["Name"] = name
+
+    certificate_number = extract_first(
+        [
+            r"(?:certificate\s*(?:no|number|id))"
+            r"\s*[:#-]?\s*([A-Z0-9/-]+)"
+        ],
+        text
+    )
+
+    if certificate_number:
+        fields["Certificate Number"] = certificate_number
+
+    institution = extract_first(
+        [
+            r"(?:institution|university|college|school)"
+            r"\s*[:\-]\s*(.+)"
+        ],
+        text
+    )
+
+    if institution:
+        fields["Institution"] = institution
+
+    dates = extract_dates(text)
+
+    if dates:
+        fields["Date"] = dates[0]
 
     return fields
 
@@ -949,182 +907,114 @@ def extract_certificate_fields(text):
 # ============================================================
 
 def extract_academic_information(text):
-    information = OrderedDict()
+    information = {}
 
-    if "GITAM" in text.upper():
+    dates = extract_dates(text)
 
-        information["institution"] = (
-            "GITAM (Gandhi Institute of Technology and Management)"
-        )
+    if dates:
+        information["Dates"] = dates
 
-    else:
+    emails = extract_emails(text)
 
-        institution_patterns = [
-            r"^(.+?)(?=\s+GRADE\s+CARD\b)",
-            r"^(.+?)(?=\s+MARKS?\s+MEMO\b)",
-            r"^(.+?)(?=\s+TRANSCRIPT\b)",
-        ]
+    if emails:
+        information["Emails"] = emails
 
-        for pattern in institution_patterns:
+    phones = extract_phones(text)
 
-            match = re.search(
-                pattern,
-                text,
-                flags=re.IGNORECASE
-            )
+    if phones:
+        information["Phone Numbers"] = phones
 
-            if match:
+    urls = extract_urls(text)
 
-                institution = clean_text(
-                    match.group(1)
-                )
+    if urls:
+        information["URLs"] = urls
 
-                if institution:
-                    information["institution"] = institution
-                    break
+    references = extract_reference_numbers(text)
 
-    academic_year_match = re.search(
-        r"\b(20\d{2}\s*[-/]\s*20\d{2})\b",
-        text
-    )
+    if references:
+        information["Reference Numbers"] = references
 
-    if academic_year_match:
-        information["academic_year"] = (
-            academic_year_match.group(1)
-        )
+    amounts = extract_amounts(text)
 
-    result_patterns = [
-        r"\b(First\s+Class)\b",
-        r"\b(Second\s+Class)\b",
-        r"\b(Distinction)\b",
-        r"\b(Pass)\b",
-    ]
-
-    for pattern in result_patterns:
-
-        match = re.search(
-            pattern,
-            text,
-            flags=re.IGNORECASE
-        )
-
-        if match:
-
-            information["result"] = clean_text(
-                match.group(1)
-            )
-
-            break
+    if amounts:
+        information["Amounts"] = amounts
 
     return information
 
 
 # ============================================================
-# GENERIC ACADEMIC FIELDS
+# ACADEMIC FIELDS
 # ============================================================
 
 def extract_academic_fields(text):
-    fields = OrderedDict()
+    fields = {}
 
-    if is_grade_card(text):
+    grade_fields = extract_grade_card_fields(text)
 
-        grade_card_fields = extract_grade_card_fields(
-            text
-        )
+    if grade_fields:
+        fields.update(grade_fields)
 
-        for key, value in grade_card_fields.items():
+    label_fields = extract_label_values(text)
+
+    for key, value in label_fields.items():
+
+        if key not in fields:
             fields[key] = value
-
-        return fields
-
-    registration_match = re.search(
-        r"\b(?:Regd\.?\s*No\.?|Registration\s*No\.?|Registration\s*Number)\s*[:\-]?\s*([A-Za-z0-9/-]+)",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    if registration_match:
-        fields["registration_number"] = (
-            registration_match.group(1)
-        )
-
-    name_match = re.search(
-        r"\bName\s*[:\-]\s*(.+?)(?=\s+\b(?:Branch|Course|Registration|Regd)\b|$)",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    if name_match:
-        fields["name"] = clean_text(
-            name_match.group(1)
-        )
-
-    degree_match = re.search(
-        r"\b(B\.?\s*Tech|M\.?\s*Tech|BCA|MCA|B\.?\s*Sc|M\.?\s*Sc)\b",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    if degree_match:
-        fields["course_degree"] = clean_text(
-            degree_match.group(1)
-        )
-
-    cgpa_match = re.search(
-        r"\bCGPA\s*[:=]?\s*(\d+(?:\.\d+)?)",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    if cgpa_match:
-        fields["cgpa"] = cgpa_match.group(1)
-
-    sgpa_match = re.search(
-        r"\bSGPA\s*[:=]?\s*(\d+(?:\.\d+)?)",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    if sgpa_match:
-        fields["sgpa"] = sgpa_match.group(1)
-
-    percentage_match = re.search(
-        r"\b(?:Percentage|Percent)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*%?",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    if percentage_match:
-        fields["percentage"] = (
-            percentage_match.group(1) + "%"
-        )
 
     return fields
 
 
 # ============================================================
-# TABLE-LIKE DATA
+# GENERIC TABLE DATA
 # ============================================================
 
-def extract_table_data(text, document_type):
-    if document_type == "Academic Document" and is_grade_card(text):
+def extract_table_data(text, document_type=""):
+    rows = []
 
-        rows = extract_grade_card_table(text)
+    if document_type == "Academic Document":
+        return extract_grade_card_table(text)
 
-        return {
-            "headers": [
-                "Course Code",
-                "Name of the Course",
-                "Credits",
-                "Grade",
-            ],
-            "rows": rows,
-        }
+    lines = [
+        clean_value(line)
+        for line in text.splitlines()
+        if clean_value(line)
+    ]
 
-    return {
-        "headers": [],
-        "rows": [],
-    }
+    for line in lines:
+
+        if "|" in line:
+
+            parts = [
+                clean_value(part)
+                for part in line.split("|")
+            ]
+
+            parts = [
+                part
+                for part in parts
+                if part
+            ]
+
+            if len(parts) >= 2:
+                rows.append(parts)
+
+        elif "\t" in line:
+
+            parts = [
+                clean_value(part)
+                for part in line.split("\t")
+            ]
+
+            parts = [
+                part
+                for part in parts
+                if part
+            ]
+
+            if len(parts) >= 2:
+                rows.append(parts)
+
+    return rows
 
 
 # ============================================================
@@ -1134,27 +1024,24 @@ def extract_table_data(text, document_type):
 def extract_numbered_entries(text):
     entries = []
 
+    pattern = r"(?m)^\s*(\d+)[.)]\s*(.+)$"
+
     matches = re.findall(
-        r"(?:^|\s)(\d+)\.\s*([^0-9]{10,})",
+        pattern,
         text
     )
 
     for number, value in matches:
 
-        value = clean_text(value)
+        value = clean_value(value)
 
-        if not value:
-            continue
-
-        if len(value) > 300:
-            value = value[:300]
-
-        entries.append(
-            {
-                "number": number,
-                "text": value,
-            }
-        )
+        if value:
+            entries.append(
+                {
+                    "number": number,
+                    "value": value,
+                }
+            )
 
     return entries
 
@@ -1163,78 +1050,100 @@ def extract_numbered_entries(text):
 # GENERIC ENTITIES
 # ============================================================
 
-def extract_generic_entities(text, document_type):
-    entities = OrderedDict()
+def extract_generic_entities(text):
+    entities = {}
 
-    entities["dates"] = extract_dates(text)
-    entities["emails"] = extract_emails(text)
-    entities["phone_numbers"] = extract_phone_numbers(text)
-    entities["urls"] = extract_urls(text)
-    entities["reference_numbers"] = extract_reference_numbers(text)
+    dates = extract_dates(text)
 
-    if document_type == "Receipt / Invoice":
-        entities["amounts"] = extract_amounts(text)
-    else:
-        entities["amounts"] = []
+    if dates:
+        entities["dates"] = dates
 
-    entities["label_values"] = extract_label_values(
-        text
-    )
+    emails = extract_emails(text)
+
+    if emails:
+        entities["emails"] = emails
+
+    phones = extract_phones(text)
+
+    if phones:
+        entities["phones"] = phones
+
+    urls = extract_urls(text)
+
+    if urls:
+        entities["urls"] = urls
+
+    references = extract_reference_numbers(text)
+
+    if references:
+        entities["reference_numbers"] = references
+
+    amounts = extract_amounts(text)
+
+    if amounts:
+        entities["amounts"] = amounts
 
     return entities
 
 
 # ============================================================
-# MERGE FIELD VALUES
+# MERGE FIELDS
 # ============================================================
 
-def merge_fields(target, source):
-    for key, value in source.items():
+def merge_fields(*field_sets):
+    merged = {}
 
-        if value is None:
+    for field_set in field_sets:
+
+        if not field_set:
             continue
 
-        if isinstance(value, str):
-            value = clean_text(value)
+        for key, value in field_set.items():
 
-        if value:
-            target[key] = value
+            if value is None:
+                continue
+
+            if isinstance(value, str):
+                value = clean_value(value)
+
+                if not value:
+                    continue
+
+            merged[key] = value
+
+    return merged
 
 
 # ============================================================
-# MAIN DOCUMENT INFORMATION EXTRACTION
+# MAIN DOCUMENT EXTRACTION
 # ============================================================
 
-def extract_document_info(words, boxes=None):
+def extract_document_info(
+    text=None,
+    words=None,
+    boxes=None
+):
+    if text is None:
+        text = build_combined_text(words or [])
 
-    if words is None:
-        words = []
+    text = clean_text(text)
 
-    if not isinstance(words, list):
-        words = list(words)
+    document_type = detect_document_type(text)
 
-    text = build_combined_text(
-        words
-    )
+    entities = extract_generic_entities(text)
 
-    document_type = detect_document_type(
-        text
-    )
+    structured_fields = {}
 
-    entities = extract_generic_entities(
-        text,
-        document_type
-    )
+    label_values = extract_label_values(text)
 
-    structured_fields = OrderedDict()
-
-    merge_fields(
+    structured_fields = merge_fields(
         structured_fields,
-        entities.get(
-            "label_values",
-            {}
-        )
+        label_values
     )
+
+    # --------------------------------------------------------
+    # Academic documents
+    # --------------------------------------------------------
 
     if document_type == "Academic Document":
 
@@ -1242,33 +1151,33 @@ def extract_document_info(words, boxes=None):
             text
         )
 
-        merge_fields(
+        structured_fields = merge_fields(
             structured_fields,
             academic_fields
         )
 
-        academic_information = (
-            extract_academic_information(
-                text
-            )
+        academic_information = extract_academic_information(
+            text
         )
-
-        if is_grade_card(text):
-
-            grade_card_fields = (
-                extract_grade_card_fields(
-                    text
-                )
-            )
-
-            merge_fields(
-                structured_fields,
-                grade_card_fields
-            )
 
         entities["academic_information"] = (
             academic_information
         )
+
+        if is_grade_card(text):
+
+            grade_card_fields = extract_grade_card_fields(
+                text
+            )
+
+            structured_fields = merge_fields(
+                structured_fields,
+                grade_card_fields
+            )
+
+    # --------------------------------------------------------
+    # Receipts / invoices
+    # --------------------------------------------------------
 
     elif document_type == "Receipt / Invoice":
 
@@ -1276,34 +1185,43 @@ def extract_document_info(words, boxes=None):
             text
         )
 
-        merge_fields(
+        structured_fields = merge_fields(
             structured_fields,
             receipt_fields
         )
 
+    # --------------------------------------------------------
+    # Certificates
+    # --------------------------------------------------------
+
     elif document_type == "Certificate":
 
-        certificate_fields = (
-            extract_certificate_fields(
-                text
-            )
+        certificate_fields = extract_certificate_fields(
+            text
         )
 
-        merge_fields(
+        structured_fields = merge_fields(
             structured_fields,
             certificate_fields
         )
 
+    # --------------------------------------------------------
+    # Other documents
+    # --------------------------------------------------------
+
     else:
 
-        entities["academic_information"] = (
-            extract_academic_information(
-                text
-            )
+        academic_information = extract_academic_information(
+            text
         )
 
+        if academic_information:
+            entities["academic_information"] = (
+                academic_information
+            )
+
     # --------------------------------------------------------
-    # Grade Card table
+    # Tables
     # --------------------------------------------------------
 
     table_data = extract_table_data(
@@ -1311,44 +1229,34 @@ def extract_document_info(words, boxes=None):
         document_type
     )
 
-    entities["table_headers"] = (
-        table_data["headers"]
-    )
-
-    entities["table_rows"] = (
-        table_data["rows"]
-    )
-
     # --------------------------------------------------------
     # Numbered entries
     # --------------------------------------------------------
 
-    if document_type == "Academic Document":
-        entities["numbered_entries"] = []
-    else:
-        entities["numbered_entries"] = (
-            extract_numbered_entries(
-                text
-            )
-        )
-
-    # --------------------------------------------------------
-    # Final structured fields
-    # --------------------------------------------------------
-
-    entities["label_values"] = (
-        structured_fields
+    numbered_entries = extract_numbered_entries(
+        text
     )
 
-    document_information = OrderedDict()
+    # --------------------------------------------------------
+    # Final entities
+    # --------------------------------------------------------
 
-    document_information["document_type"] = (
-        document_type
-    )
+    entities["label_values"] = structured_fields
 
-    document_information["text"] = text
+    if table_data:
+        entities["table_data"] = table_data
 
-    document_information["entities"] = entities
+    if numbered_entries:
+        entities["numbered_entries"] = numbered_entries
+
+    # --------------------------------------------------------
+    # Final result
+    # --------------------------------------------------------
+
+    document_information = {
+        "Document Type": document_type,
+        "Fields": structured_fields,
+    }
 
     return {
         "document_information": document_information,
